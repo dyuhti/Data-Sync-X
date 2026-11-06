@@ -63,6 +63,15 @@ class SyncService {
       final pending = await _database.getPendingChanges();
       for (final change in pending) {
         try {
+          final unresolvedConflicts = await _database.getUnresolvedConflicts();
+          if (unresolvedConflicts.any(
+            (conflict) => conflict.recordId == change.recordId,
+          )) {
+            throw ConflictException(
+              'Synchronization is blocked by an unresolved conflict for '
+              '${change.recordId}.',
+            );
+          }
           await _sendChange(change);
           await _database.markChangesAsSynced([change.id]);
           successful++;

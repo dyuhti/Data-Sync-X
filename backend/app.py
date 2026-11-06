@@ -243,7 +243,12 @@ def update_note(note_id):
             "is_deleted": payload.get("is_deleted", False),
             "base_version": base_version,
         }
-        if existing.get("is_deleted", False):
+        restoring_deleted = (
+            existing.get("is_deleted", False)
+            and payload.get("is_deleted") is False
+            and base_version == existing["version"]
+        )
+        if existing.get("is_deleted", False) and not restoring_deleted:
             return _conflict_response(
                 conflict_type="UPDATE_DELETE",
                 record_id=note_id,

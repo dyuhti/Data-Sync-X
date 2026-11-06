@@ -150,6 +150,48 @@ class BackendConflictTests(unittest.TestCase):
             self.collection.documents[payload["id"]]["content"], "Content"
         )
 
+    def test_update_restores_deleted_note_at_current_version(self):
+        payload = self.note_payload()
+        self.create(payload)
+        self.client.delete(
+            f"/api/notes/{payload['id']}", json={"base_version": 1}
+        )
+
+        response = self.client.put(
+            f"/api/notes/{payload['id']}",
+            json={
+                "title": "Restored",
+                "content": "Restored content",
+                "is_deleted": False,
+                "base_version": 2,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["note"]["is_deleted"])
+        self.assertEqual(response.get_json()["note"]["version"], 3)
+
+    def test_stale_deleted_note_restoration_conflicts(self):
+        payload = self.note_payload()
+        self.create(payload)
+        self.client.delete(
+            f"/api/notes/{payload['id']}", json={"base_version": 1}
+        )
+
+        response = self.client.put(
+            f"/api/notes/{payload['id']}",
+            json={
+                "title": "Stale restore",
+                "content": "Stale content",
+                "is_deleted": False,
+                "base_version": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["conflict_type"], "UPDATE_DELETE")
+        self.assertTrue(self.collection.documents[payload["id"]]["is_deleted"])
+
     def test_create_new_id_succeeds(self):
         response = self.create(self.note_payload())
         self.assertEqual(response.status_code, 201)

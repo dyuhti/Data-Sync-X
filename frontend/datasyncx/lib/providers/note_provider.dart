@@ -25,6 +25,7 @@ class NoteProvider extends ChangeNotifier {
   SyncResult? _lastSyncResult;
   DateTime? _lastSyncTime;
   bool _isSyncing = false;
+  final Set<String> _resolvingConflictIds = {};
 
   List<Note> get notes => List.unmodifiable(_notes);
   bool get isLoading => _isLoading;
@@ -35,8 +36,9 @@ class NoteProvider extends ChangeNotifier {
   List<Conflict> get unresolvedConflicts =>
       List.unmodifiable(_unresolvedConflicts);
   int get unresolvedConflictCount => _unresolvedConflicts.length;
-  List<ChangeLog> get pendingChanges =>
-      List.unmodifiable(_changes.where((change) => !change.synced));
+  List<ChangeLog> get pendingChanges => List.unmodifiable(
+    _changes.where((change) => change.effectiveState == ChangeLogState.pending),
+  );
   int get pendingChangesCount => pendingChanges.length;
   int get createChangesCount =>
       _changes.where((change) => change.operation == 'CREATE').length;
@@ -111,6 +113,27 @@ class NoteProvider extends ChangeNotifier {
     });
   }
 
+  Future<ConflictResolutionResult> keepLocal(String conflictId) =>
+      _resolveConflict(
+        conflictId: conflictId,
+        strategy: ConflictResolutionStrategy.keepLocal,
+      );
+
+  Future<ConflictResolutionResult> keepServer(String conflictId) =>
+      _resolveConflict(
+        conflictId: conflictId,
+        strategy: ConflictResolutionStrategy.keepServer,
+      );
+
+  Future<ConflictResolutionResult> manualMerge(
+    String conflictId,
+    Map<String, dynamic> mergedPayload,
+  ) => _resolveConflict(
+    conflictId: conflictId,
+    strategy: ConflictResolutionStrategy.manualMerge,
+    mergedPayload: mergedPayload,
+  );
+
   Future<void> addNote(String title, String content) async {
     await _runDatabaseOperation(() async {
       final note = await _database.insertNote(title: title, content: content);
@@ -140,6 +163,39 @@ class NoteProvider extends ChangeNotifier {
       _notes.removeWhere((item) => item.id == note.id);
       _changes = await _database.getAllChanges();
     });
+  }
+
+  Future<ConflictResolutionResult> _resolveConflict({
+    required String conflictId,
+    required ConflictResolutionStrategy strategy,
+    Map<String, dynamic>? mergedPayload,
+  }) async {
+    if (!_resolvingConflictIds.add(conflictId)) {
+      throw StateError('Conflict $conflictId is already being resolved.');
+    }
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+    try {
+      final result = await _database.resolveConflict(
+        conflictId: conflictId,
+        strategy: strategy,
+        mergedPayload: mergedPayload,
+      );
+      _notes = await _database.getAllNotes();
+      _changes = await _database.getAllChanges();
+      _unresolvedConflicts = await _database.getUnresolvedConflicts();
+      notifyListeners();
+      return result;
+    } on Object catch (error) {
+      _errorMessage = 'Conflict resolution failed: $error';
+      notifyListeners();
+      rethrow;
+    } finally {
+      _resolvingConflictIds.remove(conflictId);
+      _isLoading = false;
+      notifyListeners();
+    }
   }
 
   Future<void> _runDatabaseOperation(Future<void> Function() operation) async {

@@ -7,7 +7,9 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:datasyncx/database/local_db.dart';
+import 'package:datasyncx/models/change_log.dart';
 import 'package:datasyncx/models/conflict.dart';
+import 'package:datasyncx/models/note.dart';
 import 'package:datasyncx/providers/note_provider.dart';
 import 'package:datasyncx/services/sync_service.dart';
 
@@ -78,6 +80,50 @@ void main() {
     'remote_payload': {'id': id, 'content': 'Remote content', 'version': 2},
     'operation': operation,
   };
+
+  Future<Conflict> createResolvedConflictFixture({
+    required String suffix,
+    required ConflictType type,
+  }) async {
+    final note = await database.insertNote(
+      title: 'Local $suffix',
+      content: 'Local content $suffix',
+    );
+    final create = (await database.getPendingChanges()).lastWhere(
+      (change) => change.recordId == note.id,
+    );
+    await database.markChangesAsSynced([create.id]);
+    final change = await database.insertChangeLog(
+      recordId: note.id,
+      operation: 'UPDATE',
+      baseVersion: 1,
+      version: 2,
+      payload: jsonEncode({
+        'id': note.id,
+        'title': 'Local $suffix',
+        'content': 'Local content $suffix',
+        'version': 2,
+        'updated_at': '2026-11-06T10:00:00.000Z',
+        'is_deleted': false,
+      }),
+    );
+    return database.insertConflict(
+      recordId: note.id,
+      conflictType: type,
+      operation: change.operation,
+      localVersion: 2,
+      remoteVersion: 2,
+      localPayload: jsonDecode(change.payload) as Map<String, dynamic>,
+      remotePayload: {
+        'id': note.id,
+        'title': 'Remote $suffix',
+        'content': 'Remote content $suffix',
+        'version': 2,
+        'updated_at': '2026-11-06T10:01:00.000Z',
+        'is_deleted': false,
+      },
+    );
+  }
 
   test(
     'sends base_version with UPDATE and successful sync marks it synced',
@@ -252,4 +298,135 @@ void main() {
     expect(provider.unresolvedConflicts, isNotEmpty);
     expect(provider.unresolvedConflictCount, greaterThan(0));
   });
+
+  test(
+    'KEEP_LOCAL syncs only the consolidated operation at remote version',
+    () async {
+      final conflict = await createResolvedConflictFixture(
+        suffix: 'keep-local-sync',
+        type: ConflictType.updateUpdate,
+      );
+      final resolution = await database.resolveConflict(
+        conflictId: conflict.conflictId,
+        strategy: ConflictResolutionStrategy.keepLocal,
+      );
+      final requests = <http.BaseRequest>[];
+      final client = RecordingClient((request) async {
+        requests.add(request);
+        expect(request.method, 'PUT');
+        final body = jsonDecode((request as http.Request).body);
+        expect(body['base_version'], 2);
+        expect(body['content'], 'Local content keep-local-sync');
+        return http.Response(
+          jsonEncode(noteResponse(conflict.recordId, version: 3)),
+          200,
+        );
+      });
+
+      final result = await SyncService(
+        database: database,
+        client: client,
+        baseUrl: 'http://test',
+      ).syncPendingChanges();
+
+      expect(result.succeeded, isTrue);
+      expect(requests, hasLength(1));
+      expect(
+        resolution.resolutionChange!.effectiveState,
+        ChangeLogState.pending,
+      );
+      expect(
+        (await database.getAllChanges()).where(
+          (change) => change.effectiveState == ChangeLogState.superseded,
+        ),
+        hasLength(1),
+      );
+      expect(
+        (await database.getAllChanges())
+            .firstWhere(
+              (change) => change.id == resolution.resolutionChange!.id,
+            )
+            .effectiveState,
+        ChangeLogState.synced,
+      );
+    },
+  );
+
+  test(
+    'KEEP_SERVER creates no outbound request and leaves the note synced',
+    () async {
+      final conflict = await createResolvedConflictFixture(
+        suffix: 'keep-server-sync',
+        type: ConflictType.updateUpdate,
+      );
+      await database.resolveConflict(
+        conflictId: conflict.conflictId,
+        strategy: ConflictResolutionStrategy.keepServer,
+      );
+      final client = RecordingClient((request) async {
+        fail('KEEP_SERVER must not send a request.');
+      });
+
+      final result = await SyncService(
+        database: database,
+        client: client,
+        baseUrl: 'http://test',
+      ).syncPendingChanges();
+
+      expect(result.succeeded, isTrue);
+      expect(result.remainingPending, 0);
+      expect(
+        (await database.getNoteById(conflict.recordId))!.syncStatus,
+        NoteSyncStatus.synced,
+      );
+    },
+  );
+
+  test(
+    'MANUAL_MERGE syncs merged content with the remote base version',
+    () async {
+      final conflict = await createResolvedConflictFixture(
+        suffix: 'manual-sync',
+        type: ConflictType.updateUpdate,
+      );
+      final resolution = await database.resolveConflict(
+        conflictId: conflict.conflictId,
+        strategy: ConflictResolutionStrategy.manualMerge,
+        mergedPayload: {
+          'id': conflict.recordId,
+          'title': 'Merged title',
+          'content': 'Merged content',
+          'version': 3,
+          'updated_at': '2026-11-06T10:02:00.000Z',
+          'is_deleted': false,
+        },
+      );
+      final client = RecordingClient((request) async {
+        expect(request.method, 'PUT');
+        final body = jsonDecode((request as http.Request).body);
+        expect(body['base_version'], 2);
+        expect(body['title'], 'Merged title');
+        expect(body['content'], 'Merged content');
+        return http.Response(
+          jsonEncode(noteResponse(conflict.recordId, version: 3)),
+          200,
+        );
+      });
+
+      await SyncService(
+        database: database,
+        client: client,
+        baseUrl: 'http://test',
+      ).syncPendingChanges();
+
+      expect(
+        (await database.getAllChanges())
+            .firstWhere(
+              (change) => change.id == resolution.resolutionChange!.id,
+            )
+            .effectiveState,
+        ChangeLogState.synced,
+      );
+    },
+  );
 }
