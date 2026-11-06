@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'database/local_db.dart';
 import 'providers/note_provider.dart';
 import 'screens/conflict_screen.dart';
 import 'screens/home_screen.dart';
@@ -9,10 +10,17 @@ import 'screens/settings_screen.dart';
 import 'screens/sync_screen.dart';
 import 'theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  final noteProvider = NoteProvider(database: LocalDatabase.instance);
+  try {
+    await noteProvider.loadNotes();
+  } on Object {
+    // The provider exposes the error and the app remains usable for retry.
+  }
   runApp(
     ChangeNotifierProvider(
-      create: (_) => NoteProvider(),
+      create: (_) => noteProvider,
       child: const DataSyncXApp(),
     ),
   );

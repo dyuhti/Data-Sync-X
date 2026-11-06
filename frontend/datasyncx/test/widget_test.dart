@@ -15,7 +15,6 @@ void main() {
     );
 
     expect(find.text('Data Sync X'), findsOneWidget);
-    expect(find.text('Project kickoff notes'), findsOneWidget);
 
     await tester.tap(find.text('Sync'));
     await tester.pumpAndSettle();

@@ -94,15 +94,23 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
     return null;
   }
 
-  void _save() {
+  Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     final provider = context.read<NoteProvider>();
-    if (isEditing) {
-      provider.updateNote(widget.note!, _titleController.text.trim(), _contentController.text.trim());
-    } else {
-      provider.addNote(_titleController.text.trim(), _contentController.text.trim());
+    try {
+      if (isEditing) {
+        await provider.updateNote(widget.note!, _titleController.text.trim(), _contentController.text.trim());
+      } else {
+        await provider.addNote(_titleController.text.trim(), _contentController.text.trim());
+      }
+      if (mounted) Navigator.pop(context);
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to save note. Please try again.')),
+        );
+      }
     }
-    Navigator.pop(context);
   }
 
   Future<void> _delete() async {
@@ -118,8 +126,16 @@ class _NoteEditorScreenState extends State<NoteEditorScreen> {
       ),
     );
     if (confirmed == true && mounted) {
-      context.read<NoteProvider>().deleteNote(widget.note!);
-      Navigator.pop(context);
+      try {
+        await context.read<NoteProvider>().deleteNote(widget.note!);
+        if (mounted) Navigator.pop(context);
+      } on Object {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to delete note. Please try again.')),
+          );
+        }
+      }
     }
   }
 }

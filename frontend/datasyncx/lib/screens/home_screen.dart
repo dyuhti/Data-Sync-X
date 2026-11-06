@@ -28,6 +28,26 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<NoteProvider>();
+    if (provider.errorMessage != null && provider.notes.isEmpty) {
+      return SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('Notes could not be loaded.'),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: provider.isLoading ? null : provider.refreshNotes,
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final notes = provider.notes.where((note) {
       final query = _query.toLowerCase();
       return note.title.toLowerCase().contains(query) ||
