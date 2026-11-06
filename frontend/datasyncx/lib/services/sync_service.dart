@@ -28,9 +28,12 @@ class SyncService {
     http.Client? client,
     String? baseUrl,
     this._timeout = const Duration(seconds: 15),
-  })  : _database = database ?? LocalDatabase.instance,
-        _client = client ?? http.Client(),
-        _baseUrl = (baseUrl ?? ApiConfig.baseUrl).replaceFirst(RegExp(r'/$'), '');
+  }) : _database = database ?? LocalDatabase.instance,
+       _client = client ?? http.Client(),
+       _baseUrl = (baseUrl ?? ApiConfig.baseUrl).replaceFirst(
+         RegExp(r'/$'),
+         '',
+       );
 
   final LocalDatabase _database;
   final http.Client _client;
@@ -88,35 +91,42 @@ class SyncService {
     }
     final payload = Map<String, dynamic>.from(decoded);
     if (payload['id'] != change.recordId) {
-      throw const FormatException('Change payload id does not match record id.');
+      throw const FormatException(
+        'Change payload id does not match record id.',
+      );
     }
 
     final uri = Uri.parse('$_baseUrl/api/notes/${change.recordId}');
     http.Response response;
     switch (change.operation) {
       case 'CREATE':
-        response = await _request(() => _client.post(
-              Uri.parse('$_baseUrl/api/notes'),
-              headers: _headers,
-              body: jsonEncode(payload),
-            ));
+        response = await _request(
+          () => _client.post(
+            Uri.parse('$_baseUrl/api/notes'),
+            headers: _headers,
+            body: jsonEncode(payload),
+          ),
+        );
         if (response.statusCode == 409) {
           await _acceptEquivalentRemoteNote(change, payload);
           return;
         }
         break;
       case 'UPDATE':
-        response = await _request(() => _client.put(
-              uri,
-              headers: _headers,
-              body: jsonEncode(payload),
-            ));
+        response = await _request(
+          () => _client.put(uri, headers: _headers, body: jsonEncode(payload)),
+        );
         break;
       case 'DELETE':
         response = await _request(() => _client.delete(uri, headers: _headers));
+        if (response.statusCode == 404) {
+          return;
+        }
         break;
       default:
-        throw FormatException('Unsupported change operation: ${change.operation}');
+        throw FormatException(
+          'Unsupported change operation: ${change.operation}',
+        );
     }
     _validateResponse(response, expectedId: change.recordId);
   }
@@ -135,7 +145,8 @@ class SyncService {
       );
     }
     final remote = _validatedNote(response, expectedId: change.recordId);
-    final sameContent = remote['title'] == local['title'] &&
+    final sameContent =
+        remote['title'] == local['title'] &&
         remote['content'] == local['content'] &&
         remote['version'] == local['version'] &&
         remote['is_deleted'] == (local['is_deleted'] ?? false);
@@ -146,7 +157,9 @@ class SyncService {
     }
   }
 
-  Future<http.Response> _request(Future<http.Response> Function() request) async {
+  Future<http.Response> _request(
+    Future<http.Response> Function() request,
+  ) async {
     try {
       return await request().timeout(_timeout);
     } on Object catch (error) {
@@ -172,7 +185,9 @@ class SyncService {
     if (decoded is! Map<String, dynamic> ||
         decoded['status'] != 'ok' ||
         decoded['note'] is! Map<String, dynamic>) {
-      throw const FormatException('Server response does not match the note API contract.');
+      throw const FormatException(
+        'Server response does not match the note API contract.',
+      );
     }
     final note = Map<String, dynamic>.from(decoded['note'] as Map);
     if (note['id'] != expectedId ||
@@ -189,7 +204,9 @@ class SyncService {
   String _errorMessage(http.Response response) {
     try {
       final body = jsonDecode(response.body);
-      if (body is Map && body['message'] is String) return body['message'] as String;
+      if (body is Map && body['message'] is String) {
+        return body['message'] as String;
+      }
     } on Object {
       // The status code is still useful when the server does not return JSON.
     }
@@ -197,9 +214,9 @@ class SyncService {
   }
 
   Map<String, String> get _headers => const {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      };
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+  };
 }
 
 class HttpException implements Exception {

@@ -7,8 +7,8 @@ import '../services/sync_service.dart';
 
 class NoteProvider extends ChangeNotifier {
   NoteProvider({LocalDatabase? database, SyncService? syncService})
-      : _database = database ?? LocalDatabase.instance,
-        _syncService = syncService ?? SyncService(database: database);
+    : _database = database ?? LocalDatabase.instance,
+      _syncService = syncService ?? SyncService(database: database);
 
   final LocalDatabase _database;
   final SyncService _syncService;
@@ -27,16 +27,17 @@ class NoteProvider extends ChangeNotifier {
       _notes.where((note) => note.syncStatus == NoteSyncStatus.pending).length;
   List<ChangeLog> get changes => List.unmodifiable(_changes);
   List<ChangeLog> get pendingChanges =>
-        List.unmodifiable(_changes.where((change) => !change.synced));
+      List.unmodifiable(_changes.where((change) => !change.synced));
   int get pendingChangesCount => pendingChanges.length;
   int get createChangesCount =>
-        _changes.where((change) => change.operation == 'CREATE').length;
+      _changes.where((change) => change.operation == 'CREATE').length;
   int get updateChangesCount =>
-        _changes.where((change) => change.operation == 'UPDATE').length;
+      _changes.where((change) => change.operation == 'UPDATE').length;
   int get deleteChangesCount =>
-        _changes.where((change) => change.operation == 'DELETE').length;
+      _changes.where((change) => change.operation == 'DELETE').length;
   bool get isSyncing => _isSyncing;
-  int get successfulOperationsCount => _lastSyncResult?.successfulOperations ?? 0;
+  int get successfulOperationsCount =>
+      _lastSyncResult?.successfulOperations ?? 0;
   int get failedOperationsCount => _lastSyncResult?.failedOperations ?? 0;
   int get remainingPendingCount => pendingChangesCount;
   DateTime? get lastSyncTime => _lastSyncTime;
@@ -66,31 +67,31 @@ class NoteProvider extends ChangeNotifier {
   }
 
   Future<void> loadNotes() async {
-      await _runDatabaseOperation(() async {
-        _notes = await _database.getAllNotes();
-        _changes = await _database.getAllChanges();
-      });
+    await _runDatabaseOperation(() async {
+      _notes = await _database.getAllNotes();
+      _changes = await _database.getAllChanges();
+    });
   }
 
   Future<void> refreshNotes() => loadNotes();
 
   Future<void> loadPendingChanges() async {
-      await _runDatabaseOperation(() async {
-        _changes = await _database.getPendingChanges();
-      });
+    await _runDatabaseOperation(() async {
+      _changes = await _database.getPendingChanges();
+    });
   }
 
   Future<void> loadChangeHistory() async {
-      await _runDatabaseOperation(() async {
-        _changes = await _database.getAllChanges();
-      });
+    await _runDatabaseOperation(() async {
+      _changes = await _database.getAllChanges();
+    });
   }
 
   Future<void> markChangesAsSynced(Iterable<String> operationIds) async {
-      await _runDatabaseOperation(() async {
-        await _database.markChangesAsSynced(operationIds);
-        _changes = await _database.getAllChanges();
-      });
+    await _runDatabaseOperation(() async {
+      await _database.markChangesAsSynced(operationIds);
+      _changes = await _database.getAllChanges();
+    });
   }
 
   Future<void> addNote(String title, String content) async {

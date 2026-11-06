@@ -37,6 +37,8 @@ class LocalDatabase {
     );
     _database = database;
     await _seedIfEmpty(database);
+    await ensureInitialUploadChanges();
+    await reconcileNoteSyncStatuses();
     return database;
   }
 
@@ -59,7 +61,11 @@ class LocalDatabase {
     await _createChangeLogTable(database);
   }
 
-  Future<void> _onUpgrade(Database database, int oldVersion, int newVersion) async {
+  Future<void> _onUpgrade(
+    Database database,
+    int oldVersion,
+    int newVersion,
+  ) async {
     if (oldVersion < 1) {
       await _onCreate(database, newVersion);
     } else if (oldVersion < 2) {
@@ -115,7 +121,8 @@ class LocalDatabase {
       Note(
         id: _uuid.v4(),
         title: 'Reading list',
-        content: 'Add books about design systems, productivity, and mindfulness.',
+        content:
+            'Add books about design systems, productivity, and mindfulness.',
         version: 1,
         updatedAt: now.subtract(const Duration(days: 1)),
         syncStatus: NoteSyncStatus.synced,
@@ -125,6 +132,64 @@ class LocalDatabase {
       for (final note in samples) {
         await transaction.insert(_notesTable, _toMap(note));
       }
+    });
+  }
+
+  Future<void> ensureInitialUploadChanges() async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      final notes = await transaction.query(
+        _notesTable,
+        where:
+            '''
+          is_deleted = 0
+          AND NOT EXISTS (
+            SELECT 1
+            FROM $_changeLogTable
+            WHERE $_changeLogTable.record_id = $_notesTable.id
+              AND $_changeLogTable.operation = 'CREATE'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM $_changeLogTable
+            WHERE $_changeLogTable.record_id = $_notesTable.id
+              AND $_changeLogTable.synced = 1
+          )
+        ''',
+      );
+
+      for (final row in notes) {
+        final note = _fromMap(row);
+        await insertChangeLog(
+          recordId: note.id,
+          operation: 'CREATE',
+          baseVersion: 0,
+          version: note.version,
+          payload: _notePayload(note),
+          executor: transaction,
+        );
+      }
+    });
+  }
+
+  Future<void> reconcileNoteSyncStatuses() async {
+    final database = await this.database;
+    await database.transaction((transaction) async {
+      await transaction.rawUpdate(
+        '''
+        UPDATE $_notesTable
+        SET sync_status = CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM $_changeLogTable
+            WHERE $_changeLogTable.record_id = $_notesTable.id
+              AND $_changeLogTable.synced = 0
+          ) THEN ?
+          ELSE ?
+        END
+        ''',
+        [NoteSyncStatus.pending.name, NoteSyncStatus.synced.name],
+      );
     });
   }
 
@@ -226,10 +291,7 @@ class LocalDatabase {
     await database.transaction((transaction) async {
       final changed = await transaction.update(
         _notesTable,
-        {
-          ..._toMap(deletedNote),
-          'is_deleted': 1,
-        },
+        {..._toMap(deletedNote), 'is_deleted': 1},
         where: 'id = ? AND is_deleted = ?',
         whereArgs: [note.id, 0],
       );
@@ -241,7 +303,10 @@ class LocalDatabase {
         operation: 'DELETE',
         baseVersion: note.version,
         version: deletedNote.version,
-        payload: jsonEncode({..._notePayloadMap(deletedNote), 'is_deleted': true}),
+        payload: jsonEncode({
+          ..._notePayloadMap(deletedNote),
+          'is_deleted': true,
+        }),
         executor: transaction,
       );
     });
@@ -302,70 +367,104 @@ class LocalDatabase {
     final ids = operationIds.toList();
     if (ids.isEmpty) return;
     final database = await this.database;
-    final placeholders = List.filled(ids.length, '?').join(', ');
-    await database.update(
-      _changeLogTable,
-      {'synced': 1},
-      where: 'id IN ($placeholders)',
-      whereArgs: ids,
-    );
+    await database.transaction((transaction) async {
+      for (final operationId in ids) {
+        final changes = await transaction.query(
+          _changeLogTable,
+          columns: ['record_id'],
+          where: 'id = ?',
+          whereArgs: [operationId],
+          limit: 1,
+        );
+        if (changes.isEmpty) continue;
+
+        final recordId = changes.first['record_id']! as String;
+        await transaction.update(
+          _changeLogTable,
+          {'synced': 1},
+          where: 'id = ?',
+          whereArgs: [operationId],
+        );
+        final pending = await transaction.query(
+          _changeLogTable,
+          columns: ['id'],
+          where: 'record_id = ? AND synced = ?',
+          whereArgs: [recordId, 0],
+          limit: 1,
+        );
+        await transaction.update(
+          _notesTable,
+          {
+            'sync_status': pending.isEmpty
+                ? NoteSyncStatus.synced.name
+                : NoteSyncStatus.pending.name,
+          },
+          where: 'id = ?',
+          whereArgs: [recordId],
+        );
+      }
+    });
   }
 
   Future<int> clearSyncedChanges() async {
     final database = await this.database;
-    return database.delete(_changeLogTable, where: 'synced = ?', whereArgs: [1]);
+    return database.delete(
+      _changeLogTable,
+      where: 'synced = ?',
+      whereArgs: [1],
+    );
   }
 
   Map<String, Object?> _toMap(Note note) => {
-        'id': note.id,
-        'title': note.title,
-        'content': note.content,
-        'version': note.version,
-        'updated_at': note.updatedAt.toIso8601String(),
-        'sync_status': note.syncStatus.name,
-        'is_deleted': 0,
-      };
+    'id': note.id,
+    'title': note.title,
+    'content': note.content,
+    'version': note.version,
+    'updated_at': note.updatedAt.toIso8601String(),
+    'sync_status': note.syncStatus.name,
+    'is_deleted': 0,
+  };
 
   String _notePayload(Note note) => jsonEncode(_notePayloadMap(note));
 
   Map<String, Object?> _notePayloadMap(Note note) => {
-        'id': note.id,
-        'title': note.title,
-        'content': note.content,
-        'version': note.version,
-        'updated_at': note.updatedAt.toIso8601String(),
-        'sync_status': note.syncStatus.name,
-        'is_deleted': false,
-      };
+    'id': note.id,
+    'title': note.title,
+    'content': note.content,
+    'version': note.version,
+    'updated_at': note.updatedAt.toIso8601String(),
+    'sync_status': note.syncStatus.name,
+    'is_deleted': false,
+  };
 
   Map<String, Object?> _changeToMap(ChangeLog change) => {
-        'id': change.id,
-        'record_id': change.recordId,
-        'operation': change.operation,
-        'base_version': change.baseVersion,
-        'version': change.version,
-        'timestamp': change.timestamp.toIso8601String(),
-        'payload': change.payload,
-        'synced': change.synced ? 1 : 0,
-      };
+    'id': change.id,
+    'record_id': change.recordId,
+    'operation': change.operation,
+    'base_version': change.baseVersion,
+    'version': change.version,
+    'timestamp': change.timestamp.toIso8601String(),
+    'payload': change.payload,
+    'synced': change.synced ? 1 : 0,
+  };
 
   ChangeLog _changeFromMap(Map<String, Object?> map) => ChangeLog(
-        id: map['id']! as String,
-        recordId: map['record_id']! as String,
-        operation: map['operation']! as String,
-        baseVersion: map['base_version']! as int,
-        version: map['version']! as int,
-        timestamp: DateTime.parse(map['timestamp']! as String),
-        payload: map['payload']! as String,
-        synced: map['synced']! as int == 1,
-      );
+    id: map['id']! as String,
+    recordId: map['record_id']! as String,
+    operation: map['operation']! as String,
+    baseVersion: map['base_version']! as int,
+    version: map['version']! as int,
+    timestamp: DateTime.parse(map['timestamp']! as String),
+    payload: map['payload']! as String,
+    synced: map['synced']! as int == 1,
+  );
 
   Note _fromMap(Map<String, Object?> map) => Note(
-        id: map['id']! as String,
-        title: map['title']! as String,
-        content: map['content']! as String,
-        version: map['version']! as int,
-        updatedAt: DateTime.parse(map['updated_at']! as String),
-        syncStatus: NoteSyncStatus.values.byName(map['sync_status']! as String),
-      );
+    id: map['id']! as String,
+    title: map['title']! as String,
+    content: map['content']! as String,
+    version: map['version']! as int,
+    updatedAt: DateTime.parse(map['updated_at']! as String),
+    syncStatus: NoteSyncStatus.values.byName(map['sync_status']! as String),
+  );
 }

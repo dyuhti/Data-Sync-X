@@ -28,6 +28,48 @@ def _json_error(message, status):
     return jsonify({"status": "error", "message": message}), status
 
 
+def _conflict_response(
+    *,
+    conflict_type,
+    record_id,
+    local_version,
+    remote_version,
+    local_payload,
+    remote_payload,
+    operation,
+):
+    return jsonify({
+        "status": "conflict",
+        "conflict_type": conflict_type,
+        "record_id": record_id,
+        "local_version": local_version,
+        "remote_version": remote_version,
+        "local_payload": local_payload,
+        "remote_payload": remote_payload,
+        "operation": operation,
+    }), 409
+
+
+def _require_base_version(payload):
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object.")
+    base_version = payload.get("base_version")
+    if (
+        not isinstance(base_version, int)
+        or isinstance(base_version, bool)
+        or base_version < 0
+    ):
+        raise ValueError("base_version must be a non-negative integer.")
+    return base_version
+
+
+def _local_version(payload, base_version):
+    version = payload.get("version", base_version + 1)
+    if isinstance(version, int) and not isinstance(version, bool):
+        return version
+    return base_version + 1
+
+
 def _parse_note_payload(payload, *, require_id):
     if not isinstance(payload, dict):
         raise ValueError("Request body must be a JSON object.")
@@ -134,11 +176,39 @@ def create_note():
             "is_deleted": payload.get("is_deleted", False),
         }
         client, collection = _get_note_collection()
+        existing = collection.find_one({"id": note["id"]})
+        if existing is not None:
+            existing_note = _serialize_note(existing)
+            if existing_note == _serialize_note(note):
+                return jsonify({"status": "ok", "note": existing_note})
+            return _conflict_response(
+                conflict_type="DUPLICATE_INSERT",
+                record_id=note["id"],
+                local_version=note["version"],
+                remote_version=existing_note["version"],
+                local_payload=_serialize_note(note),
+                remote_payload=existing_note,
+                operation="CREATE",
+            )
         collection.insert_one(note)
         return jsonify({"status": "ok", "note": _serialize_note(note)}), 201
     except ValueError as error:
         return _json_error(str(error), 400)
     except DuplicateKeyError:
+        existing = collection.find_one({"id": note["id"]})
+        if existing is not None:
+            existing_note = _serialize_note(existing)
+            if existing_note == _serialize_note(note):
+                return jsonify({"status": "ok", "note": existing_note})
+            return _conflict_response(
+                conflict_type="DUPLICATE_INSERT",
+                record_id=note["id"],
+                local_version=note["version"],
+                remote_version=existing_note["version"],
+                local_payload=_serialize_note(note),
+                remote_payload=existing_note,
+                operation="CREATE",
+            )
         return _json_error("A note with this id already exists.", 409)
     except (PyMongoError, RuntimeError) as error:
         return _json_error(f"Unable to create note: {error}", 503)
@@ -158,10 +228,41 @@ def update_note(note_id):
     try:
         payload = request.get_json(silent=True)
         _parse_note_payload(payload, require_id=False)
+        base_version = _require_base_version(payload)
         client, collection = _get_note_collection()
         existing = collection.find_one({"id": note_id})
         if existing is None:
             return _json_error("Note not found.", 404)
+        remote_note = _serialize_note(existing)
+        local_payload = {
+            "id": note_id,
+            "title": payload["title"],
+            "content": payload["content"],
+            "version": _local_version(payload, base_version),
+            "updated_at": payload.get("updated_at", _utc_timestamp()),
+            "is_deleted": payload.get("is_deleted", False),
+            "base_version": base_version,
+        }
+        if existing.get("is_deleted", False):
+            return _conflict_response(
+                conflict_type="UPDATE_DELETE",
+                record_id=note_id,
+                local_version=local_payload["version"],
+                remote_version=remote_note["version"],
+                local_payload=local_payload,
+                remote_payload=remote_note,
+                operation="UPDATE",
+            )
+        if base_version != existing["version"]:
+            return _conflict_response(
+                conflict_type="UPDATE_UPDATE",
+                record_id=note_id,
+                local_version=local_payload["version"],
+                remote_version=remote_note["version"],
+                local_payload=local_payload,
+                remote_payload=remote_note,
+                operation="UPDATE",
+            )
 
         updated_note = {
             "id": note_id,
@@ -191,10 +292,32 @@ def delete_note(note_id):
         return _json_error("id must be a valid UUID string.", 400)
 
     try:
+        payload = request.get_json(silent=True)
+        base_version = _require_base_version(payload)
         client, collection = _get_note_collection()
         existing = collection.find_one({"id": note_id})
         if existing is None:
             return _json_error("Note not found.", 404)
+        remote_note = _serialize_note(existing)
+        local_version = base_version + 1
+        local_payload = {
+            "id": note_id,
+            "version": local_version,
+            "base_version": base_version,
+            "is_deleted": True,
+        }
+        if existing.get("is_deleted", False):
+            return jsonify({"status": "ok", "note": remote_note})
+        if base_version != existing["version"]:
+            return _conflict_response(
+                conflict_type="UPDATE_DELETE",
+                record_id=note_id,
+                local_version=local_version,
+                remote_version=remote_note["version"],
+                local_payload=local_payload,
+                remote_payload=remote_note,
+                operation="DELETE",
+            )
 
         deleted_note = {
             **existing,
