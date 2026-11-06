@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import '../config/api_config.dart';
 import '../database/local_db.dart';
 import '../models/change_log.dart';
+import '../models/conflict.dart';
 
 class SyncResult {
   const SyncResult({
@@ -108,17 +109,30 @@ class SyncService {
           ),
         );
         if (response.statusCode == 409) {
-          await _acceptEquivalentRemoteNote(change, payload);
-          return;
+          final decoded = jsonDecode(response.body);
+          if (decoded is! Map || decoded['status'] != 'conflict') {
+            await _acceptEquivalentRemoteNote(change, payload);
+            return;
+          }
         }
         break;
       case 'UPDATE':
         response = await _request(
-          () => _client.put(uri, headers: _headers, body: jsonEncode(payload)),
+          () => _client.put(
+            uri,
+            headers: _headers,
+            body: jsonEncode({...payload, 'base_version': change.baseVersion}),
+          ),
         );
         break;
       case 'DELETE':
-        response = await _request(() => _client.delete(uri, headers: _headers));
+        response = await _request(
+          () => _client.delete(
+            uri,
+            headers: _headers,
+            body: jsonEncode({'base_version': change.baseVersion}),
+          ),
+        );
         if (response.statusCode == 404) {
           return;
         }
@@ -128,8 +142,46 @@ class SyncService {
           'Unsupported change operation: ${change.operation}',
         );
     }
+    if (response.statusCode == 409) {
+      await _storeConflict(response, change);
+    }
     _validateResponse(response, expectedId: change.recordId);
   }
+
+  Future<void> _storeConflict(http.Response response, ChangeLog change) async {
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map) {
+      throw const FormatException('Conflict response must be a JSON object.');
+    }
+    final body = Map<String, dynamic>.from(decoded);
+    if (body['status'] != 'conflict' ||
+        body['conflict_type'] is! String ||
+        body['record_id'] != change.recordId ||
+        body['operation'] != change.operation ||
+        !_isNullableInt(body['local_version']) ||
+        !_isNullableInt(body['remote_version']) ||
+        body['local_payload'] is! Map ||
+        body['remote_payload'] is! Map) {
+      throw const FormatException(
+        'Conflict response does not match the conflict API contract.',
+      );
+    }
+    final conflictType = ConflictType.fromValue(
+      body['conflict_type'] as String,
+    );
+    await _database.insertConflict(
+      recordId: body['record_id'] as String,
+      conflictType: conflictType,
+      operation: body['operation'] as String,
+      localVersion: body['local_version'] as int?,
+      remoteVersion: body['remote_version'] as int?,
+      localPayload: Map<String, dynamic>.from(body['local_payload'] as Map),
+      remotePayload: Map<String, dynamic>.from(body['remote_payload'] as Map),
+    );
+  }
+
+  bool _isNullableInt(Object? value) =>
+      value == null || (value is int && value is! bool);
 
   Future<void> _acceptEquivalentRemoteNote(
     ChangeLog change,

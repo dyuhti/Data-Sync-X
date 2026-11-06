@@ -109,9 +109,16 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Data Sync X', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
+              Text(
+                'Data Sync X',
+                style: Theme.of(context).textTheme.headlineSmall
+                    ?.copyWith(fontWeight: FontWeight.w800),
+              ),
               const SizedBox(height: 6),
-              Text('Welcome back, keep creating.', style: TextStyle(color: Colors.grey.shade600)),
+              Text(
+                'Welcome back, keep creating.',
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
             ],
           ),
         ),
@@ -133,7 +140,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _divider(),
           _stat('Pending', '${provider.pendingCount}'),
           _divider(),
-          _stat('Last sync', '10:42 AM'),
+          _stat('Conflicts', '${provider.unresolvedConflictCount}'),
         ],
       ),
     );
@@ -143,9 +150,22 @@ class _HomeScreenState extends State<HomeScreen> {
     return Expanded(
       child: Column(
         children: [
-          Text(value, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
           const SizedBox(height: 5),
-          Text(label, style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 11)),
+          Text(
+            label,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.7),
+              fontSize: 11,
+            ),
+          ),
         ],
       ),
     );

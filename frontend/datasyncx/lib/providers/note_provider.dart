@@ -2,18 +2,24 @@ import 'package:flutter/foundation.dart';
 
 import '../database/local_db.dart';
 import '../models/change_log.dart';
+import '../models/conflict.dart';
 import '../models/note.dart';
 import '../services/sync_service.dart';
 
 class NoteProvider extends ChangeNotifier {
-  NoteProvider({LocalDatabase? database, SyncService? syncService})
-    : _database = database ?? LocalDatabase.instance,
-      _syncService = syncService ?? SyncService(database: database);
+  NoteProvider({
+    LocalDatabase? database,
+    SyncService? syncService,
+    List<Conflict>? initialConflicts,
+  }) : _unresolvedConflicts = initialConflicts ?? [],
+       _database = database ?? LocalDatabase.instance,
+       _syncService = syncService ?? SyncService(database: database);
 
   final LocalDatabase _database;
   final SyncService _syncService;
   List<Note> _notes = [];
   List<ChangeLog> _changes = [];
+  List<Conflict> _unresolvedConflicts;
   bool _isLoading = false;
   String? _errorMessage;
   SyncResult? _lastSyncResult;
@@ -26,6 +32,9 @@ class NoteProvider extends ChangeNotifier {
   int get pendingCount =>
       _notes.where((note) => note.syncStatus == NoteSyncStatus.pending).length;
   List<ChangeLog> get changes => List.unmodifiable(_changes);
+  List<Conflict> get unresolvedConflicts =>
+      List.unmodifiable(_unresolvedConflicts);
+  int get unresolvedConflictCount => _unresolvedConflicts.length;
   List<ChangeLog> get pendingChanges =>
       List.unmodifiable(_changes.where((change) => !change.synced));
   int get pendingChangesCount => pendingChanges.length;
@@ -54,6 +63,7 @@ class NoteProvider extends ChangeNotifier {
       _lastSyncTime = DateTime.now();
       _changes = await _database.getAllChanges();
       _notes = await _database.getAllNotes();
+      _unresolvedConflicts = await _database.getUnresolvedConflicts();
       if (_lastSyncResult!.error != null) {
         _errorMessage = _lastSyncResult!.error;
       }
@@ -70,6 +80,7 @@ class NoteProvider extends ChangeNotifier {
     await _runDatabaseOperation(() async {
       _notes = await _database.getAllNotes();
       _changes = await _database.getAllChanges();
+      _unresolvedConflicts = await _database.getUnresolvedConflicts();
     });
   }
 
@@ -84,6 +95,12 @@ class NoteProvider extends ChangeNotifier {
   Future<void> loadChangeHistory() async {
     await _runDatabaseOperation(() async {
       _changes = await _database.getAllChanges();
+    });
+  }
+
+  Future<void> loadConflicts() async {
+    await _runDatabaseOperation(() async {
+      _unresolvedConflicts = await _database.getUnresolvedConflicts();
     });
   }
 

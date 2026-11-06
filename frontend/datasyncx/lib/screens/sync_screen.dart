@@ -18,11 +18,18 @@ class SyncScreen extends StatelessWidget {
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         children: [
-          Text('Synchronization', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
+          Text(
+            'Synchronization',
+            style: Theme.of(context).textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.w800),
+          ),
           const SizedBox(height: 8),
           Row(
             children: [
-              Text('Keep your notes up to date', style: TextStyle(color: Colors.grey.shade600)),
+              Text(
+                'Keep your notes up to date',
+                style: TextStyle(color: Colors.grey.shade600),
+              ),
               const Spacer(),
               const ConnectivityBadge(compact: true),
             ],
@@ -39,8 +46,14 @@ class SyncScreen extends StatelessWidget {
               children: [
                 Container(
                   padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: Colors.green.shade50, shape: BoxShape.circle),
-                  child: Icon(Icons.cloud_done_outlined, color: Colors.green.shade700),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.cloud_done_outlined,
+                    color: Colors.green.shade700,
+                  ),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -58,7 +71,10 @@ class SyncScreen extends StatelessWidget {
                         provider.lastSyncTime == null
                             ? 'No synchronization has run yet'
                             : 'Last run ${_formatTime(provider.lastSyncTime!)}',
-                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
                       ),
                     ],
                   ),
@@ -71,14 +87,54 @@ class SyncScreen extends StatelessWidget {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _statCard(Icons.pending_actions, 'Pending changes', '$pending', Colors.orange.shade700),
-              _statCard(Icons.list_alt, 'Total operations', '${provider.changes.length}', Colors.blue.shade700),
-              _statCard(Icons.add_circle_outline, 'Creates', '${provider.createChangesCount}', Colors.teal.shade700),
-              _statCard(Icons.edit_outlined, 'Updates', '${provider.updateChangesCount}', Colors.indigo.shade700),
-              _statCard(Icons.delete_outline, 'Deletes', '${provider.deleteChangesCount}', Colors.red.shade600),
-              _statCard(Icons.check_circle_outline, 'Synchronized', '${provider.successfulOperationsCount}', Colors.green.shade700),
-              _statCard(Icons.error_outline, 'Failed', '${provider.failedOperationsCount}', Colors.red.shade700),
-              _statCard(Icons.hourglass_empty, 'Remaining', '${provider.remainingPendingCount}', Colors.orange.shade700),
+              _statCard(
+                Icons.pending_actions,
+                'Pending changes',
+                '$pending',
+                Colors.orange.shade700,
+              ),
+              _statCard(
+                Icons.list_alt,
+                'Total operations',
+                '${provider.changes.length}',
+                Colors.blue.shade700,
+              ),
+              _statCard(
+                Icons.add_circle_outline,
+                'Creates',
+                '${provider.createChangesCount}',
+                Colors.teal.shade700,
+              ),
+              _statCard(
+                Icons.edit_outlined,
+                'Updates',
+                '${provider.updateChangesCount}',
+                Colors.indigo.shade700,
+              ),
+              _statCard(
+                Icons.delete_outline,
+                'Deletes',
+                '${provider.deleteChangesCount}',
+                Colors.red.shade600,
+              ),
+              _statCard(
+                Icons.check_circle_outline,
+                'Synchronized',
+                '${provider.successfulOperationsCount}',
+                Colors.green.shade700,
+              ),
+              _statCard(
+                Icons.error_outline,
+                'Failed',
+                '${provider.failedOperationsCount}',
+                Colors.red.shade700,
+              ),
+              _statCard(
+                Icons.hourglass_empty,
+                'Remaining',
+                '${provider.remainingPendingCount}',
+                Colors.orange.shade700,
+              ),
             ],
           ),
           const SizedBox(height: 22),
@@ -100,12 +156,19 @@ class SyncScreen extends StatelessWidget {
                     );
                   },
             icon: provider.isSyncing
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
                 : const Icon(Icons.sync),
             label: Text(provider.isSyncing ? 'Syncing...' : 'Sync now'),
           ),
           const SizedBox(height: 28),
-          const Text('Recent Local Changes', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          const Text(
+            'Recent Local Changes',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+          ),
           const SizedBox(height: 12),
           if (provider.changes.isEmpty)
             const Card(
@@ -116,20 +179,37 @@ class SyncScreen extends StatelessWidget {
               ),
             )
           else
-            ...provider.changes.reversed.take(10).map(
-                  (change) =>                   _ChangeTile(
+            ...provider.changes.reversed
+                .take(10)
+                .map(
+                  (change) => _ChangeTile(
                     change: change,
                     noteTitle: _noteTitle(provider, change.recordId),
                   ),
                 ),
           const SizedBox(height: 24),
-          const Text('Recent activity', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+          const Text(
+            'Recent activity',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+          ),
           const SizedBox(height: 12),
           Card(
             child: ListTile(
-              leading: Icon(Icons.warning_amber_rounded, color: Colors.orange.shade700),
-              title: const Text('1 conflict needs review'),
-              subtitle: const Text('Project kickoff notes'),
+              leading: Icon(
+                provider.unresolvedConflictCount == 0
+                    ? Icons.check_circle_outline
+                    : Icons.warning_amber_rounded,
+                color: provider.unresolvedConflictCount == 0
+                    ? Colors.green.shade700
+                    : Colors.orange.shade700,
+              ),
+              title: Text(
+                provider.unresolvedConflictCount == 0
+                    ? 'No unresolved conflicts'
+                    : '${provider.unresolvedConflictCount} conflict'
+                          '${provider.unresolvedConflictCount == 1 ? '' : 's'} needs review',
+              ),
+              subtitle: const Text('Review detected note differences'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(builder: (_) => const ConflictScreen()),
@@ -137,21 +217,42 @@ class SyncScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          const _ActivityTile(icon: Icons.check_circle, color: Color(0xFF059669), title: 'Notes synchronized', detail: 'Today, 10:42 AM'),
-          const _ActivityTile(icon: Icons.check_circle, color: Color(0xFF059669), title: 'Notes synchronized', detail: 'Yesterday, 6:18 PM'),
-          const _ActivityTile(icon: Icons.info_outline, color: Colors.orange, title: 'Sync pending', detail: 'Yesterday, 3:05 PM'),
+          const _ActivityTile(
+            icon: Icons.check_circle,
+            color: Color(0xFF059669),
+            title: 'Notes synchronized',
+            detail: 'Today, 10:42 AM',
+          ),
+          const _ActivityTile(
+            icon: Icons.check_circle,
+            color: Color(0xFF059669),
+            title: 'Notes synchronized',
+            detail: 'Yesterday, 6:18 PM',
+          ),
+          const _ActivityTile(
+            icon: Icons.info_outline,
+            color: Colors.orange,
+            title: 'Sync pending',
+            detail: 'Yesterday, 3:05 PM',
+          ),
         ],
       ),
     );
   }
 
-  String _formatTime(DateTime time) => time.toLocal().toString().split('.').first;
+  String _formatTime(DateTime time) =>
+      time.toLocal().toString().split('.').first;
 
   Widget _statCard(IconData icon, String label, String value, Color color) {
     return SizedBox(
       width: 170,
       height: 145,
-      child: SyncStatusCard(icon: icon, label: label, value: value, color: color),
+      child: SyncStatusCard(
+        icon: icon,
+        label: label,
+        value: value,
+        color: color,
+      ),
     );
   }
 
@@ -181,7 +282,9 @@ class _ChangeTile extends StatelessWidget {
       child: ListTile(
         leading: Icon(_operationIcon(change.operation), color: color),
         title: Text('${change.operation} - $title'),
-        subtitle: Text('${change.timestamp.toIso8601String()}  |  v${change.version}'),
+        subtitle: Text(
+          '${change.timestamp.toIso8601String()}  |  v${change.version}',
+        ),
         trailing: Text(
           isSynced ? 'Synced' : 'Pending',
           style: TextStyle(color: color, fontWeight: FontWeight.w700),
@@ -205,7 +308,12 @@ class _ChangeTile extends StatelessWidget {
 }
 
 class _ActivityTile extends StatelessWidget {
-  const _ActivityTile({required this.icon, required this.color, required this.title, required this.detail});
+  const _ActivityTile({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.detail,
+  });
 
   final IconData icon;
   final Color color;

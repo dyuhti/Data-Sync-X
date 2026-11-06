@@ -85,7 +85,14 @@ class BackendConflictTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 409)
         conflict = second.get_json()
+        self.assertEqual(conflict["status"], "conflict")
         self.assertEqual(conflict["conflict_type"], "UPDATE_UPDATE")
+        self.assertEqual(conflict["record_id"], payload["id"])
+        self.assertEqual(conflict["operation"], "UPDATE")
+        self.assertEqual(conflict["local_version"], 2)
+        self.assertEqual(conflict["remote_version"], 2)
+        self.assertEqual(conflict["local_payload"]["title"], "Second")
+        self.assertEqual(conflict["local_payload"]["content"], "Two")
         self.assertEqual(conflict["remote_payload"]["content"], "One")
         self.assertEqual(self.collection.documents[payload["id"]]["content"], "One")
 
@@ -113,7 +120,13 @@ class BackendConflictTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["conflict_type"], "UPDATE_DELETE")
+        conflict = response.get_json()
+        self.assertEqual(conflict["conflict_type"], "UPDATE_DELETE")
+        self.assertEqual(conflict["operation"], "DELETE")
+        self.assertEqual(conflict["local_version"], 2)
+        self.assertEqual(conflict["remote_version"], 2)
+        self.assertTrue(conflict["local_payload"]["is_deleted"])
+        self.assertEqual(conflict["remote_payload"]["content"], "New")
         self.assertFalse(self.collection.documents[payload["id"]]["is_deleted"])
 
     def test_update_against_deleted_note_conflicts(self):
@@ -129,7 +142,13 @@ class BackendConflictTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["conflict_type"], "UPDATE_DELETE")
+        conflict = response.get_json()
+        self.assertEqual(conflict["conflict_type"], "UPDATE_DELETE")
+        self.assertEqual(conflict["operation"], "UPDATE")
+        self.assertTrue(conflict["remote_payload"]["is_deleted"])
+        self.assertEqual(
+            self.collection.documents[payload["id"]]["content"], "Content"
+        )
 
     def test_create_new_id_succeeds(self):
         response = self.create(self.note_payload())
@@ -153,7 +172,13 @@ class BackendConflictTests(unittest.TestCase):
         response = self.create(duplicate)
 
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.get_json()["conflict_type"], "DUPLICATE_INSERT")
+        conflict = response.get_json()
+        self.assertEqual(conflict["status"], "conflict")
+        self.assertEqual(conflict["conflict_type"], "DUPLICATE_INSERT")
+        self.assertEqual(conflict["record_id"], payload["id"])
+        self.assertEqual(conflict["operation"], "CREATE")
+        self.assertEqual(conflict["local_payload"]["content"], "Different")
+        self.assertEqual(conflict["remote_payload"]["content"], "Content")
         self.assertEqual(
             self.collection.documents[payload["id"]]["content"], "Content"
         )
