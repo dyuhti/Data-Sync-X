@@ -194,6 +194,18 @@ class SyncService {
             body: jsonEncode({...payload, 'base_version': change.baseVersion}),
           ),
         );
+        if (response.statusCode == 404) {
+          response = await _request(
+            () => _client.post(
+              Uri.parse('$_baseUrl/api/notes'),
+              headers: _headers,
+              body: jsonEncode(payload),
+            ),
+          );
+          if (response.statusCode == 409) {
+            response = _asUpdateConflict(response, change, payload);
+          }
+        }
         break;
       case 'DELETE':
         response = await _request(
@@ -216,6 +228,46 @@ class SyncService {
       await _storeConflict(response, change);
     }
     _validateResponse(response, expectedId: change.recordId);
+  }
+
+  http.Response _asUpdateConflict(
+    http.Response response,
+    ChangeLog change,
+    Map<String, dynamic> localPayload,
+  ) {
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map ||
+        decoded['status'] != 'conflict' ||
+        decoded['record_id'] != change.recordId ||
+        decoded['remote_payload'] is! Map) {
+      throw const FormatException(
+        'Create response does not match the conflict API contract.',
+      );
+    }
+
+    final remotePayload = Map<String, dynamic>.from(
+      decoded['remote_payload'] as Map,
+    );
+    final conflictType = remotePayload['is_deleted'] == true
+        ? ConflictType.updateDelete
+        : ConflictType.updateUpdate;
+    return http.Response(
+      jsonEncode({
+        ...Map<String, dynamic>.from(decoded),
+        'conflict_type': conflictType.value,
+        'record_id': change.recordId,
+        'local_version': change.version,
+        'remote_version': decoded['remote_version'],
+        'local_payload': {...localPayload, 'base_version': change.baseVersion},
+        'remote_payload': remotePayload,
+        'operation': change.operation,
+        'message': 'The note ID already exists on the server.',
+      }),
+      response.statusCode,
+      headers: response.headers,
+      reasonPhrase: response.reasonPhrase,
+      request: response.request,
+    );
   }
 
   Future<void> _storeConflict(http.Response response, ChangeLog change) async {

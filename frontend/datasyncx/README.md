@@ -6,7 +6,9 @@ downloads and merges remote notes, uploads eligible pending operations using
 their `base_version`, and downloads again to include updates made during the
 upload phase. A remote merge never replaces a note with pending local changes;
 the backend rejects stale writes with HTTP 409 and the app stores the conflict
-for review.
+for review. If an update targets a note missing from the server, sync attempts
+to recreate it from the pending local version; an ID collision is recorded as
+a conflict rather than overwriting the server note.
 
 ## Reproduce an unresolved conflict
 

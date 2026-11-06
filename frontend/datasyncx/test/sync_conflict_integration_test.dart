@@ -179,6 +179,147 @@ void main() {
     },
   );
 
+  test('recreates a missing remote note when an UPDATE returns 404', () async {
+    final note = await database.insertNote(
+      title: 'Local note',
+      content: 'Original content',
+    );
+    final create = (await database.getPendingChanges()).single;
+    await database.markChangesAsSynced([create.id]);
+    final change = await database.insertChangeLog(
+      recordId: note.id,
+      operation: 'UPDATE',
+      baseVersion: 1,
+      version: 2,
+      payload: jsonEncode({
+        'id': note.id,
+        'title': 'Updated note',
+        'content': 'Updated content',
+        'version': 2,
+        'updated_at': '2026-11-06T10:00:00.000Z',
+        'is_deleted': false,
+      }),
+    );
+    Map<String, dynamic>? recreatedNote;
+    final client = RecordingClient((request) async {
+      if (request.method == 'GET') {
+        return http.Response(
+          jsonEncode(
+            notesResponse(recreatedNote == null ? [] : [recreatedNote!]),
+          ),
+          200,
+        );
+      }
+      if (request.method == 'PUT') {
+        return http.Response(
+          jsonEncode({'status': 'error', 'message': 'Note not found.'}),
+          404,
+        );
+      }
+      expect(request.method, 'POST');
+      recreatedNote =
+          jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+      return http.Response(
+        jsonEncode({'status': 'ok', 'note': recreatedNote}),
+        201,
+      );
+    });
+
+    final result = await SyncService(
+      database: database,
+      client: client,
+      baseUrl: 'http://test',
+    ).syncPendingChanges();
+
+    expect(result.succeeded, isTrue);
+    expect(recreatedNote?['title'], 'Updated note');
+    expect(recreatedNote?['version'], 2);
+    expect(
+      (await database.getAllChanges())
+          .firstWhere((item) => item.id == change.id)
+          .synced,
+      isTrue,
+    );
+    expect(client.requests.map((request) => request.method), [
+      'GET',
+      'PUT',
+      'POST',
+      'GET',
+    ]);
+  });
+
+  test(
+    'records a conflict if a different note exists during recovery',
+    () async {
+      final note = await database.insertNote(
+        title: 'Local note',
+        content: 'Original content',
+      );
+      final create = (await database.getPendingChanges()).single;
+      await database.markChangesAsSynced([create.id]);
+      await database.insertChangeLog(
+        recordId: note.id,
+        operation: 'UPDATE',
+        baseVersion: 1,
+        version: 2,
+        payload: jsonEncode({
+          'id': note.id,
+          'title': 'Updated note',
+          'content': 'Updated content',
+          'version': 2,
+          'updated_at': '2026-11-06T10:00:00.000Z',
+          'is_deleted': false,
+        }),
+      );
+      final remote = {
+        'id': note.id,
+        'title': 'Different server note',
+        'content': 'Server content',
+        'version': 1,
+        'updated_at': '2026-11-06T09:00:00.000Z',
+        'is_deleted': false,
+      };
+      final client = RecordingClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
+        if (request.method == 'PUT') {
+          return http.Response(
+            jsonEncode({'status': 'error', 'message': 'Note not found.'}),
+            404,
+          );
+        }
+        expect(request.method, 'POST');
+        return http.Response(
+          jsonEncode({
+            'status': 'conflict',
+            'conflict_type': 'DUPLICATE_INSERT',
+            'record_id': note.id,
+            'local_version': 2,
+            'remote_version': 1,
+            'local_payload': {'id': note.id, 'version': 2},
+            'remote_payload': remote,
+            'operation': 'CREATE',
+          }),
+          409,
+        );
+      });
+
+      final result = await SyncService(
+        database: database,
+        client: client,
+        baseUrl: 'http://test',
+      ).syncPendingChanges();
+      final conflicts = await database.getUnresolvedConflicts();
+
+      expect(result.succeeded, isFalse);
+      expect(conflicts, hasLength(1));
+      expect(conflicts.single.conflictType, ConflictType.updateUpdate);
+      expect(conflicts.single.operation, 'UPDATE');
+      expect(await database.getPendingChangesCount(), 1);
+    },
+  );
+
   test('sends base_version with DELETE', () async {
     final note = await database.insertNote(
       title: 'Delete note',
