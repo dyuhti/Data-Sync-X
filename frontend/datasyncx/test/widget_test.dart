@@ -6,7 +6,9 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:datasyncx/database/local_db.dart';
 import 'package:datasyncx/main.dart';
+import 'package:datasyncx/models/conflict.dart';
 import 'package:datasyncx/providers/note_provider.dart';
+import 'package:datasyncx/screens/sync_screen.dart';
 
 void main() {
   sqfliteFfiInit();
@@ -61,5 +63,40 @@ void main() {
     await tester.tap(find.text('Save note'));
     await tester.pump();
     expect(find.text('This field is required'), findsNWidgets(2));
+  });
+
+  testWidgets('shows a direct review action for unresolved conflicts', (
+    tester,
+  ) async {
+    final provider = NoteProvider(
+      database: database,
+      initialConflicts: [
+        Conflict(
+          conflictId: 'sync-screen-conflict',
+          recordId: 'shared-note',
+          conflictType: ConflictType.updateUpdate,
+          operation: 'UPDATE',
+          localVersion: 2,
+          remoteVersion: 2,
+          localPayload: {'title': 'Shared note', 'content': 'Local edit'},
+          remotePayload: {'title': 'Shared note', 'content': 'Remote edit'},
+          detectedAt: DateTime(2026, 11, 6),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      ChangeNotifierProvider.value(
+        value: provider,
+        child: const MaterialApp(home: SyncScreen()),
+      ),
+    );
+
+    expect(find.text('1 unresolved conflict'), findsOneWidget);
+    await tester.tap(find.text('Review conflict'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Conflicts'), findsOneWidget);
+    expect(find.text('Shared note'), findsOneWidget);
   });
 }

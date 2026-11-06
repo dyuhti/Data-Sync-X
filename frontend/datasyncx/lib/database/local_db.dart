@@ -9,11 +9,11 @@ import '../models/change_log.dart';
 import '../models/conflict.dart';
 
 class LocalDatabase {
-  LocalDatabase._([this._databasePath, this._seedDatabase = true]);
+  LocalDatabase._([this._databasePath]);
 
   static final LocalDatabase instance = LocalDatabase._();
   static LocalDatabase forTesting(String databasePath) =>
-      LocalDatabase._(databasePath, false);
+      LocalDatabase._(databasePath);
   static Future<void> resetForTesting() => instance.close();
   static const _databaseName = 'datasyncx.db';
   static const _databaseVersion = 4;
@@ -23,7 +23,6 @@ class LocalDatabase {
   static const _uuid = Uuid();
 
   final String? _databasePath;
-  final bool _seedDatabase;
   Database? _database;
   Future<Database>? _databaseFuture;
 
@@ -43,9 +42,6 @@ class LocalDatabase {
       onUpgrade: _onUpgrade,
     );
     _database = database;
-    if (_seedDatabase) {
-      await _seedIfEmpty(database);
-    }
     await ensureInitialUploadChanges();
     await reconcileNoteSyncStatuses();
     return database;
@@ -248,47 +244,6 @@ class LocalDatabase {
     );
   }
 
-  Future<void> _seedIfEmpty(Database database) async {
-    final count = Sqflite.firstIntValue(
-      await database.rawQuery('SELECT COUNT(*) FROM $_notesTable'),
-    );
-    if (count != 0) return;
-
-    final now = DateTime.now();
-    final samples = [
-      Note(
-        id: _uuid.v4(),
-        title: 'Project kickoff notes',
-        content: 'Outline the first sprint goals and align with the team.',
-        version: 1,
-        updatedAt: now.subtract(const Duration(minutes: 18)),
-        syncStatus: NoteSyncStatus.synced,
-      ),
-      Note(
-        id: _uuid.v4(),
-        title: 'Ideas for weekend',
-        content: 'Try the new coffee shop and take a long walk by the lake.',
-        version: 1,
-        updatedAt: now.subtract(const Duration(hours: 2)),
-        syncStatus: NoteSyncStatus.pending,
-      ),
-      Note(
-        id: _uuid.v4(),
-        title: 'Reading list',
-        content:
-            'Add books about design systems, productivity, and mindfulness.',
-        version: 1,
-        updatedAt: now.subtract(const Duration(days: 1)),
-        syncStatus: NoteSyncStatus.synced,
-      ),
-    ];
-    await database.transaction((transaction) async {
-      for (final note in samples) {
-        await transaction.insert(_notesTable, _toMap(note));
-      }
-    });
-  }
-
   Future<void> ensureInitialUploadChanges() async {
     final database = await this.database;
     await database.transaction((transaction) async {
@@ -394,6 +349,52 @@ class LocalDatabase {
       limit: 1,
     );
     return rows.isEmpty ? null : _fromMap(rows.first);
+  }
+
+  Future<int> mergeRemoteNotes(List<Map<String, dynamic>> remoteNotes) async {
+    final database = await this.database;
+    var changedNotes = 0;
+    await database.transaction((transaction) async {
+      for (final remote in remoteNotes) {
+        final id = remote['id']! as String;
+        final localRows = await transaction.query(
+          _notesTable,
+          where: 'id = ?',
+          whereArgs: [id],
+          limit: 1,
+        );
+        if (localRows.isNotEmpty) {
+          final pendingRows = await transaction.query(
+            _changeLogTable,
+            columns: ['id'],
+            where: 'record_id = ? AND state = ?',
+            whereArgs: [id, ChangeLogState.pending.value],
+            limit: 1,
+          );
+          if (pendingRows.isNotEmpty) continue;
+
+          final localVersion = localRows.first['version']! as int;
+          final remoteVersion = remote['version']! as int;
+          if (remoteVersion <= localVersion) continue;
+        }
+
+        await transaction.insert(
+          _notesTable,
+          {
+            'id': id,
+            'title': remote['title']! as String,
+            'content': remote['content']! as String,
+            'version': remote['version']! as int,
+            'updated_at': remote['updated_at']! as String,
+            'sync_status': NoteSyncStatus.synced.name,
+            'is_deleted': remote['is_deleted']! as bool ? 1 : 0,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        changedNotes++;
+      }
+    });
+    return changedNotes;
   }
 
   Future<Note> updateNote(

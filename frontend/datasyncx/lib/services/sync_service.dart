@@ -12,12 +12,14 @@ class SyncResult {
     required this.successfulOperations,
     required this.failedOperations,
     required this.remainingPending,
+    this.downloadedNotes = 0,
     this.error,
   });
 
   final int successfulOperations;
   final int failedOperations;
   final int remainingPending;
+  final int downloadedNotes;
   final String? error;
 
   bool get succeeded => failedOperations == 0 && error == null;
@@ -58,28 +60,44 @@ class SyncService {
     _isSyncing = true;
     var successful = 0;
     var failed = 0;
+    var downloadedNotes = 0;
     String? error;
     try {
-      final pending = await _database.getPendingChanges();
-      for (final change in pending) {
-        try {
-          final unresolvedConflicts = await _database.getUnresolvedConflicts();
-          if (unresolvedConflicts.any(
-            (conflict) => conflict.recordId == change.recordId,
-          )) {
-            throw ConflictException(
-              'Synchronization is blocked by an unresolved conflict for '
-              '${change.recordId}.',
-            );
+      try {
+        downloadedNotes += await _pullRemoteNotes();
+      } on Object catch (exception) {
+        error = 'Unable to download notes before upload: $exception';
+      }
+
+      if (error == null) {
+        final pending = await _database.getPendingChanges();
+        for (final change in pending) {
+          try {
+            final unresolvedConflicts = await _database
+                .getUnresolvedConflicts();
+            if (unresolvedConflicts.any(
+              (conflict) => conflict.recordId == change.recordId,
+            )) {
+              throw ConflictException(
+                'Synchronization is blocked by an unresolved conflict for '
+                '${change.recordId}.',
+              );
+            }
+            await _sendChange(change);
+            await _database.markChangesAsSynced([change.id]);
+            successful++;
+          } on Object catch (exception) {
+            failed++;
+            error = exception.toString();
+            // Keep the queue ordered: later operations may depend on this one.
+            break;
           }
-          await _sendChange(change);
-          await _database.markChangesAsSynced([change.id]);
-          successful++;
+        }
+
+        try {
+          downloadedNotes += await _pullRemoteNotes();
         } on Object catch (exception) {
-          failed++;
-          error = exception.toString();
-          // Keep the queue ordered: later operations may depend on this one.
-          break;
+          error ??= 'Unable to download notes after upload: $exception';
         }
       }
     } finally {
@@ -90,8 +108,51 @@ class SyncService {
       successfulOperations: successful,
       failedOperations: failed,
       remainingPending: await _database.getPendingChangesCount(),
+      downloadedNotes: downloadedNotes,
       error: error,
     );
+  }
+
+  Future<int> _pullRemoteNotes() async {
+    final remoteNotes = await _fetchRemoteNotes();
+    return _database.mergeRemoteNotes(remoteNotes);
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchRemoteNotes() async {
+    final response = await _request(
+      () => _client.get(Uri.parse('$_baseUrl/api/notes'), headers: _headers),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(
+        'Server rejected the download (HTTP ${response.statusCode}): '
+        '${_errorMessage(response)}',
+      );
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic> ||
+        decoded['status'] != 'ok' ||
+        decoded['notes'] is! List) {
+      throw const FormatException(
+        'Server response does not match the notes API contract.',
+      );
+    }
+    return (decoded['notes'] as List).map((note) {
+      if (note is! Map<String, dynamic> ||
+          note['id'] is! String ||
+          note['title'] is! String ||
+          note['content'] is! String ||
+          note['version'] is! int ||
+          (note['version'] as int) < 1 ||
+          note['updated_at'] is! String ||
+          note['is_deleted'] is! bool) {
+        throw const FormatException(
+          'Server returned an invalid note in the notes list.',
+        );
+      }
+      DateTime.parse(note['updated_at'] as String);
+      return Map<String, dynamic>.from(note);
+    }).toList();
   }
 
   Future<void> _sendChange(ChangeLog change) async {

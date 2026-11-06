@@ -25,6 +25,8 @@ class NoteProvider extends ChangeNotifier {
   SyncResult? _lastSyncResult;
   DateTime? _lastSyncTime;
   bool _isSyncing = false;
+  int _successfulSyncCount = 0;
+  int _failedSyncCount = 0;
   final Set<String> _resolvingConflictIds = {};
 
   List<Note> get notes => List.unmodifiable(_notes);
@@ -50,6 +52,9 @@ class NoteProvider extends ChangeNotifier {
   int get successfulOperationsCount =>
       _lastSyncResult?.successfulOperations ?? 0;
   int get failedOperationsCount => _lastSyncResult?.failedOperations ?? 0;
+  int get successfulSyncCount => _successfulSyncCount;
+  int get failedSyncCount => _failedSyncCount;
+  int get downloadedUpdatesCount => _lastSyncResult?.downloadedNotes ?? 0;
   int get remainingPendingCount => pendingChangesCount;
   DateTime? get lastSyncTime => _lastSyncTime;
   String? get lastSyncError => _lastSyncResult?.error;
@@ -62,14 +67,20 @@ class NoteProvider extends ChangeNotifier {
     notifyListeners();
     try {
       _lastSyncResult = await _syncService.syncPendingChanges();
-      _lastSyncTime = DateTime.now();
       _changes = await _database.getAllChanges();
       _notes = await _database.getAllNotes();
       _unresolvedConflicts = await _database.getUnresolvedConflicts();
+      if (_lastSyncResult!.succeeded) {
+        _lastSyncTime = DateTime.now();
+        _successfulSyncCount++;
+      } else {
+        _failedSyncCount++;
+      }
       if (_lastSyncResult!.error != null) {
         _errorMessage = _lastSyncResult!.error;
       }
     } on Object catch (error) {
+      _failedSyncCount++;
       _errorMessage = 'Synchronization failed: $error';
       rethrow;
     } finally {

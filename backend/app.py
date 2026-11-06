@@ -277,7 +277,32 @@ def update_note(note_id):
             "updated_at": _utc_timestamp(),
             "is_deleted": payload.get("is_deleted", existing["is_deleted"]),
         }
-        collection.replace_one({"id": note_id}, updated_note)
+        result = collection.replace_one(
+            {
+                "id": note_id,
+                "version": base_version,
+                "is_deleted": existing.get("is_deleted", False),
+            },
+            updated_note,
+        )
+        if result.matched_count == 0:
+            latest = collection.find_one({"id": note_id})
+            if latest is None:
+                return _json_error("Note not found.", 404)
+            latest_note = _serialize_note(latest)
+            return _conflict_response(
+                conflict_type=(
+                    "UPDATE_DELETE"
+                    if latest_note["is_deleted"]
+                    else "UPDATE_UPDATE"
+                ),
+                record_id=note_id,
+                local_version=local_payload["version"],
+                remote_version=latest_note["version"],
+                local_payload=local_payload,
+                remote_payload=latest_note,
+                operation="UPDATE",
+            )
         return jsonify({"status": "ok", "note": _serialize_note(updated_note)})
     except ValueError as error:
         return _json_error(str(error), 400)
@@ -330,7 +355,30 @@ def delete_note(note_id):
             "updated_at": _utc_timestamp(),
             "is_deleted": True,
         }
-        collection.replace_one({"id": note_id}, deleted_note)
+        result = collection.replace_one(
+            {
+                "id": note_id,
+                "version": base_version,
+                "is_deleted": False,
+            },
+            deleted_note,
+        )
+        if result.matched_count == 0:
+            latest = collection.find_one({"id": note_id})
+            if latest is None:
+                return _json_error("Note not found.", 404)
+            latest_note = _serialize_note(latest)
+            if latest_note["is_deleted"]:
+                return jsonify({"status": "ok", "note": latest_note})
+            return _conflict_response(
+                conflict_type="UPDATE_DELETE",
+                record_id=note_id,
+                local_version=local_version,
+                remote_version=latest_note["version"],
+                local_payload=local_payload,
+                remote_payload=latest_note,
+                operation="DELETE",
+            )
         return jsonify({"status": "ok", "note": _serialize_note(deleted_note)})
     except (PyMongoError, RuntimeError) as error:
         return _json_error(f"Unable to delete note: {error}", 503)
@@ -340,5 +388,6 @@ def delete_note(note_id):
 
 
 if __name__ == "__main__":
+    host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "5000"))
-    app.run(host="127.0.0.1", port=port, debug=False)
+    app.run(host=host, port=port, debug=False)

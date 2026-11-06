@@ -26,11 +26,12 @@ class SyncScreen extends StatelessWidget {
           const SizedBox(height: 8),
           Row(
             children: [
-              Text(
-                'Keep your notes up to date',
-                style: TextStyle(color: Colors.grey.shade600),
+              Expanded(
+                child: Text(
+                  'Keep your notes up to date',
+                  style: TextStyle(color: Colors.grey.shade600),
+                ),
               ),
-              const Spacer(),
               const ConnectivityBadge(compact: true),
             ],
           ),
@@ -69,8 +70,9 @@ class SyncScreen extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         provider.lastSyncTime == null
-                            ? 'No synchronization has run yet'
-                            : 'Last run ${_formatTime(provider.lastSyncTime!)}',
+                            ? 'No successful synchronization yet'
+                            : 'Last successful sync '
+                                  '${_formatTime(provider.lastSyncTime!)}',
                         style: const TextStyle(
                           fontSize: 12,
                           color: Colors.grey,
@@ -82,6 +84,42 @@ class SyncScreen extends StatelessWidget {
               ],
             ),
           ),
+          if (provider.unresolvedConflictCount > 0) ...[
+            const SizedBox(height: 16),
+            Card(
+              color: Colors.orange.shade50,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${provider.unresolvedConflictCount} unresolved '
+                      'conflict${provider.unresolvedConflictCount == 1 ? '' : 's'}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: Colors.deepOrange,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Sync is paused until you choose which version to keep.',
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const ConflictScreen(),
+                        ),
+                      ),
+                      icon: const Icon(Icons.rate_review_outlined),
+                      label: const Text('Review conflict'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 18),
           Wrap(
             spacing: 12,
@@ -89,51 +127,33 @@ class SyncScreen extends StatelessWidget {
             children: [
               _statCard(
                 Icons.pending_actions,
-                'Pending changes',
+                'Pending uploads',
                 '$pending',
                 Colors.orange.shade700,
               ),
               _statCard(
-                Icons.list_alt,
-                'Total operations',
-                '${provider.changes.length}',
-                Colors.blue.shade700,
-              ),
-              _statCard(
-                Icons.add_circle_outline,
-                'Creates',
-                '${provider.createChangesCount}',
-                Colors.teal.shade700,
-              ),
-              _statCard(
-                Icons.edit_outlined,
-                'Updates',
-                '${provider.updateChangesCount}',
-                Colors.indigo.shade700,
-              ),
-              _statCard(
-                Icons.delete_outline,
-                'Deletes',
-                '${provider.deleteChangesCount}',
-                Colors.red.shade600,
+                Icons.download_done_outlined,
+                'Downloaded updates',
+                '${provider.downloadedUpdatesCount}',
+                Colors.green.shade700,
               ),
               _statCard(
                 Icons.check_circle_outline,
-                'Synchronized',
-                '${provider.successfulOperationsCount}',
+                'Successful syncs',
+                '${provider.successfulSyncCount}',
                 Colors.green.shade700,
               ),
               _statCard(
                 Icons.error_outline,
-                'Failed',
-                '${provider.failedOperationsCount}',
+                'Failed syncs',
+                '${provider.failedSyncCount}',
                 Colors.red.shade700,
               ),
               _statCard(
-                Icons.hourglass_empty,
-                'Remaining',
-                '${provider.remainingPendingCount}',
-                Colors.orange.shade700,
+                Icons.warning_amber_outlined,
+                'Unresolved conflicts',
+                '${provider.unresolvedConflictCount}',
+                Colors.deepOrange.shade700,
               ),
             ],
           ),
@@ -149,7 +169,9 @@ class SyncScreen extends StatelessWidget {
                       SnackBar(
                         content: Text(
                           result?.error == null
-                              ? '${result?.successfulOperations ?? 0} changes synchronized'
+                              ? 'Sync complete: '
+                                    '${result?.successfulOperations ?? 0} uploaded, '
+                                    '${result?.downloadedNotes ?? 0} downloaded'
                               : 'Sync stopped: ${result!.error}',
                         ),
                       ),
@@ -165,6 +187,18 @@ class SyncScreen extends StatelessWidget {
             label: Text(provider.isSyncing ? 'Syncing...' : 'Sync now'),
           ),
           const SizedBox(height: 28),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.info_outline),
+              title: Text('How to create a conflict'),
+              subtitle: Text(
+                'Sync a note to both devices. Edit that same note on both '
+                'devices without syncing either edit. Sync the first device, '
+                'then the second.',
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
           const Text(
             'Recent Local Changes',
             style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800),

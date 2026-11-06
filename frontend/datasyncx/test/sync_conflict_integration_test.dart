@@ -70,6 +70,10 @@ void main() {
     },
   };
 
+  Map<String, dynamic> notesResponse([
+    List<Map<String, dynamic>> notes = const [],
+  ]) => {'status': 'ok', 'notes': notes};
+
   Map<String, dynamic> conflictResponse(String id, String operation) => {
     'status': 'conflict',
     'conflict_type': 'UPDATE_UPDATE',
@@ -130,6 +134,9 @@ void main() {
     () async {
       late String recordId;
       final client = RecordingClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
         final body = jsonDecode((request as http.Request).body);
         recordId = request.url.pathSegments.last;
         expect(request.method, 'PUT');
@@ -189,6 +196,9 @@ void main() {
       payload: jsonEncode({'id': note.id, 'version': 2, 'is_deleted': true}),
     );
     final client = RecordingClient((request) async {
+      if (request.method == 'GET') {
+        return http.Response(jsonEncode(notesResponse()), 200);
+      }
       expect(request.method, 'DELETE');
       expect(
         jsonDecode((request as http.Request).body)['base_version'],
@@ -214,6 +224,305 @@ void main() {
       isTrue,
     );
   });
+
+  test('downloads remote notes without creating local changes', () async {
+    final remote = {
+      'id': 'remote-note',
+      'title': 'Shared note',
+      'content': 'Created on another device',
+      'version': 1,
+      'updated_at': '2026-11-06T10:00:00.000Z',
+      'is_deleted': false,
+    };
+    final client = RecordingClient((request) async {
+      expect(request.method, 'GET');
+      expect(request.url.path, '/api/notes');
+      return http.Response(jsonEncode(notesResponse([remote])), 200);
+    });
+
+    final result = await SyncService(
+      database: database,
+      client: client,
+      baseUrl: 'http://test',
+    ).syncPendingChanges();
+    final note = await database.getNoteById('remote-note');
+
+    expect(result.succeeded, isTrue);
+    expect(result.downloadedNotes, 1);
+    expect(note?.title, 'Shared note');
+    expect(note?.content, 'Created on another device');
+    expect(note?.syncStatus, NoteSyncStatus.synced);
+    expect(await database.getPendingChangesCount(), 0);
+  });
+
+  test('pulls a newer remote version over a synced local note', () async {
+    final note = await database.insertNote(
+      title: 'Original note',
+      content: 'Original content',
+    );
+    final create = (await database.getPendingChanges()).single;
+    await database.markChangesAsSynced([create.id]);
+
+    final changedNotes = await database.mergeRemoteNotes([
+      {
+        'id': note.id,
+        'title': 'Remote update',
+        'content': 'Updated from another device',
+        'version': 2,
+        'updated_at': '2026-11-06T10:01:00.000Z',
+        'is_deleted': false,
+      },
+    ]);
+
+    final storedNote = await database.getNoteById(note.id);
+    expect(changedNotes, 1);
+    expect(storedNote?.title, 'Remote update');
+    expect(storedNote?.content, 'Updated from another device');
+    expect(storedNote?.version, 2);
+    expect(storedNote?.syncStatus, NoteSyncStatus.synced);
+    expect(await database.getPendingChangesCount(), 0);
+  });
+
+  test('pulls remote soft deletions without adding local changes', () async {
+    final note = await database.insertNote(
+      title: 'Deleted remotely',
+      content: 'Original content',
+    );
+    final create = (await database.getPendingChanges()).single;
+    await database.markChangesAsSynced([create.id]);
+
+    final changedNotes = await database.mergeRemoteNotes([
+      {
+        'id': note.id,
+        'title': note.title,
+        'content': note.content,
+        'version': 2,
+        'updated_at': '2026-11-06T10:01:00.000Z',
+        'is_deleted': true,
+      },
+    ]);
+    final rows = await (await database.database).query(
+      'notes',
+      where: 'id = ?',
+      whereArgs: [note.id],
+    );
+
+    expect(changedNotes, 1);
+    expect(rows.single['is_deleted'], 1);
+    expect(await database.getNoteById(note.id), isNull);
+    expect(await database.getPendingChangesCount(), 0);
+  });
+
+  test(
+    'repeated pulls do not duplicate records or change-log entries',
+    () async {
+      final remote = {
+        'id': 'remote-note',
+        'title': 'Shared note',
+        'content': 'Created on another device',
+        'version': 1,
+        'updated_at': '2026-11-06T10:00:00.000Z',
+        'is_deleted': false,
+      };
+
+      expect(await database.mergeRemoteNotes([remote]), 1);
+      expect(await database.mergeRemoteNotes([remote]), 0);
+      expect(
+        (await database.getAllNotes()).where((n) => n.id == remote['id']),
+        hasLength(1),
+      );
+      expect(await database.getAllChanges(), isEmpty);
+    },
+  );
+
+  test(
+    'retains offline uploads and retries successfully when online',
+    () async {
+      var online = false;
+      final remoteNotes = <Map<String, dynamic>>[];
+      final client = RecordingClient((request) async {
+        if (!online) {
+          return http.Response('unavailable', 503);
+        }
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse(remoteNotes)), 200);
+        }
+        expect(request.method, 'POST');
+        final created =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        remoteNotes.add(created);
+        return http.Response(
+          jsonEncode({'status': 'ok', 'note': created}),
+          201,
+        );
+      });
+      final service = SyncService(
+        database: database,
+        client: client,
+        baseUrl: 'http://test',
+      );
+      await database.insertNote(title: 'Offline note', content: 'Retry me');
+
+      final offlineResult = await service.syncPendingChanges();
+      expect(offlineResult.succeeded, isFalse);
+      expect(offlineResult.remainingPending, 1);
+      expect(client.requests, hasLength(1));
+
+      online = true;
+      final retryResult = await service.syncPendingChanges();
+
+      expect(retryResult.succeeded, isTrue);
+      expect(retryResult.remainingPending, 0);
+      expect(remoteNotes, hasLength(1));
+      expect(
+        (await database.getAllChanges()).single.effectiveState,
+        ChangeLogState.synced,
+      );
+    },
+  );
+
+  test('does not replace a note with pending local changes', () async {
+    final note = await database.insertNote(
+      title: 'Local note',
+      content: 'Local content',
+    );
+    await database.updateNote(
+      note,
+      title: 'Edited locally',
+      content: 'Local edit',
+    );
+
+    final changedNotes = await database.mergeRemoteNotes([
+      {
+        'id': note.id,
+        'title': 'Remote note',
+        'content': 'Remote edit',
+        'version': 10,
+        'updated_at': '2026-11-06T10:00:00.000Z',
+        'is_deleted': false,
+      },
+    ]);
+
+    final storedNote = await database.getNoteById(note.id);
+    expect(changedNotes, 0);
+    expect(storedNote?.title, 'Edited locally');
+    expect(storedNote?.content, 'Local edit');
+    expect(await database.getPendingChangesCount(), 2);
+  });
+
+  test(
+    'two devices editing before sync creates an unresolved conflict',
+    () async {
+      final remoteNotes = <String, Map<String, dynamic>>{};
+      Future<http.Response> handleRequest(http.BaseRequest request) async {
+        if (request.method == 'GET') {
+          return http.Response(
+            jsonEncode(notesResponse(remoteNotes.values.toList())),
+            200,
+          );
+        }
+
+        final body =
+            jsonDecode((request as http.Request).body) as Map<String, dynamic>;
+        if (request.method == 'POST') {
+          final note = Map<String, dynamic>.from(body);
+          remoteNotes[note['id'] as String] = note;
+          return http.Response(jsonEncode({'status': 'ok', 'note': note}), 201);
+        }
+
+        expect(request.method, 'PUT');
+        final id = request.url.pathSegments.last;
+        final remote = remoteNotes[id]!;
+        final baseVersion = body['base_version'] as int;
+        if (baseVersion != remote['version']) {
+          return http.Response(
+            jsonEncode({
+              'status': 'conflict',
+              'conflict_type': 'UPDATE_UPDATE',
+              'record_id': id,
+              'local_version': body['version'],
+              'remote_version': remote['version'],
+              'local_payload': body,
+              'remote_payload': remote,
+              'operation': 'UPDATE',
+            }),
+            409,
+          );
+        }
+        final updated = {
+          ...remote,
+          'title': body['title'],
+          'content': body['content'],
+          'version': baseVersion + 1,
+          'updated_at': '2026-11-06T10:01:00.000Z',
+        };
+        remoteNotes[id] = updated;
+        return http.Response(
+          jsonEncode({'status': 'ok', 'note': updated}),
+          200,
+        );
+      }
+
+      final secondDatabasePath = join(
+        await getDatabasesPath(),
+        'sync-test-${const Uuid().v4()}.db',
+      );
+      final secondDatabase = LocalDatabase.forTesting(secondDatabasePath);
+      await secondDatabase.initialize();
+
+      try {
+        final firstService = SyncService(
+          database: database,
+          client: RecordingClient(handleRequest),
+          baseUrl: 'http://test',
+        );
+        final secondService = SyncService(
+          database: secondDatabase,
+          client: RecordingClient(handleRequest),
+          baseUrl: 'http://test',
+        );
+
+        final firstNote = await database.insertNote(
+          title: 'Conflict demo',
+          content: 'Original content',
+        );
+        expect((await firstService.syncPendingChanges()).succeeded, isTrue);
+        expect((await secondService.syncPendingChanges()).downloadedNotes, 1);
+
+        await database.updateNote(
+          firstNote,
+          title: 'Edited on A',
+          content: 'Change from emulator A',
+        );
+        final secondNote = (await secondDatabase.getNoteById(firstNote.id))!;
+        await secondDatabase.updateNote(
+          secondNote,
+          title: 'Edited on B',
+          content: 'Change from emulator B',
+        );
+
+        final secondResult = await secondService.syncPendingChanges();
+        expect(secondResult.succeeded, isTrue);
+        final firstResult = await firstService.syncPendingChanges();
+        final conflicts = await database.getUnresolvedConflicts();
+
+        expect(firstResult.failedOperations, 1);
+        expect(conflicts, hasLength(1));
+        expect(conflicts.single.recordId, firstNote.id);
+        expect(
+          conflicts.single.localPayload['content'],
+          'Change from emulator A',
+        );
+        expect(
+          conflicts.single.remotePayload['content'],
+          'Change from emulator B',
+        );
+      } finally {
+        await secondDatabase.close();
+        await deleteDatabase(secondDatabasePath);
+      }
+    },
+  );
 
   test(
     'stores structured 409, keeps change pending, and blocks later changes',
@@ -243,6 +552,9 @@ void main() {
       var requestCount = 0;
       final client = RecordingClient((request) async {
         requestCount++;
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
         return http.Response(
           jsonEncode(conflictResponse(note.id, 'UPDATE')),
           409,
@@ -259,7 +571,7 @@ void main() {
 
       expect(result.failedOperations, 1);
       expect(result.remainingPending, 2);
-      expect(requestCount, 1);
+      expect(requestCount, 3);
       expect(
         (await database.getAllChanges())
             .firstWhere((c) => c.id == first.id)
@@ -276,6 +588,7 @@ void main() {
       expect(conflicts.single.remotePayload['content'], 'Remote content');
 
       await service.syncPendingChanges();
+      expect(requestCount, 5);
       expect(await database.getConflictsForRecord(note.id), hasLength(1));
     },
   );
@@ -299,6 +612,41 @@ void main() {
     expect(provider.unresolvedConflictCount, greaterThan(0));
   });
 
+  test('provider refreshes when sync detects a remote conflict', () async {
+    final note = await database.insertNote(
+      title: 'Provider conflict',
+      content: 'Original content',
+    );
+    final create = (await database.getPendingChanges()).single;
+    await database.markChangesAsSynced([create.id]);
+    await database.updateNote(
+      note,
+      title: 'Local edit',
+      content: 'Local content',
+    );
+    final service = SyncService(
+      database: database,
+      client: RecordingClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
+        return http.Response(
+          jsonEncode(conflictResponse(note.id, 'UPDATE')),
+          409,
+        );
+      }),
+      baseUrl: 'http://test',
+    );
+    final provider = NoteProvider(database: database, syncService: service);
+
+    await provider.syncPendingChanges();
+
+    expect(provider.unresolvedConflictCount, 1);
+    expect(provider.unresolvedConflicts.single.recordId, note.id);
+    expect(provider.failedSyncCount, 1);
+    expect(provider.pendingChangesCount, 1);
+  });
+
   test(
     'KEEP_LOCAL syncs only the consolidated operation at remote version',
     () async {
@@ -312,6 +660,9 @@ void main() {
       );
       final requests = <http.BaseRequest>[];
       final client = RecordingClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
         requests.add(request);
         expect(request.method, 'PUT');
         final body = jsonDecode((request as http.Request).body);
@@ -364,6 +715,9 @@ void main() {
         strategy: ConflictResolutionStrategy.keepServer,
       );
       final client = RecordingClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
         fail('KEEP_SERVER must not send a request.');
       });
 
@@ -402,6 +756,9 @@ void main() {
         },
       );
       final client = RecordingClient((request) async {
+        if (request.method == 'GET') {
+          return http.Response(jsonEncode(notesResponse()), 200);
+        }
         expect(request.method, 'PUT');
         final body = jsonDecode((request as http.Request).body);
         expect(body['base_version'], 2);

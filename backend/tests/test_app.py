@@ -2,6 +2,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -10,13 +11,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as app_module
 
 
+class InMemoryCursor(list):
+    def sort(self, field, direction):
+        super().sort(
+            key=lambda document: document[field],
+            reverse=direction < 0,
+        )
+        return self
+
+
 class InMemoryCollection:
     def __init__(self):
         self.documents = {}
+        self.race_next_read = False
 
     def find_one(self, query):
         document = self.documents.get(query["id"])
-        return copy.deepcopy(document) if document is not None else None
+        if document is None:
+            return None
+        result = copy.deepcopy(document)
+        if self.race_next_read:
+            self.race_next_read = False
+            document["version"] += 1
+            document["title"] = "Concurrent update"
+            document["content"] = "Won the race"
+        return result
 
     def insert_one(self, document):
         if document["id"] in self.documents:
@@ -24,7 +43,22 @@ class InMemoryCollection:
         self.documents[document["id"]] = copy.deepcopy(document)
 
     def replace_one(self, query, document):
+        existing = self.documents.get(query["id"])
+        if existing is None or any(
+            existing.get(field) != value
+            for field, value in query.items()
+            if field != "id"
+        ):
+            return SimpleNamespace(matched_count=0)
         self.documents[query["id"]] = copy.deepcopy(document)
+        return SimpleNamespace(matched_count=1)
+
+    def find(self, query):
+        return InMemoryCursor(
+            copy.deepcopy(document)
+            for document in self.documents.values()
+            if all(document.get(field) == value for field, value in query.items())
+        )
 
 
 class BackendConflictTests(unittest.TestCase):
@@ -96,6 +130,29 @@ class BackendConflictTests(unittest.TestCase):
         self.assertEqual(conflict["remote_payload"]["content"], "One")
         self.assertEqual(self.collection.documents[payload["id"]]["content"], "One")
 
+    def test_update_racing_the_version_check_cannot_overwrite_winner(self):
+        payload = self.note_payload()
+        self.create(payload)
+        self.collection.race_next_read = True
+
+        response = self.client.put(
+            f"/api/notes/{payload['id']}",
+            json={
+                "title": "Stale edit",
+                "content": "Must not win",
+                "base_version": 1,
+            },
+        )
+
+        self.assertEqual(response.status_code, 409)
+        conflict = response.get_json()
+        self.assertEqual(conflict["conflict_type"], "UPDATE_UPDATE")
+        self.assertEqual(conflict["remote_version"], 2)
+        self.assertEqual(conflict["remote_payload"]["content"], "Won the race")
+        self.assertEqual(
+            self.collection.documents[payload["id"]]["content"], "Won the race"
+        )
+
     def test_normal_delete_succeeds(self):
         payload = self.note_payload()
         self.create(payload)
@@ -106,6 +163,19 @@ class BackendConflictTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["note"]["is_deleted"])
+
+    def test_notes_list_includes_soft_deleted_records(self):
+        payload = self.note_payload()
+        self.create(payload)
+        self.client.delete(
+            f"/api/notes/{payload['id']}", json={"base_version": 1}
+        )
+
+        response = self.client.get("/api/notes")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.get_json()["notes"]), 1)
+        self.assertTrue(response.get_json()["notes"][0]["is_deleted"])
 
     def test_stale_delete_conflicts(self):
         payload = self.note_payload()
