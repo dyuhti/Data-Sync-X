@@ -85,6 +85,9 @@ class BackendConflictTests(unittest.TestCase):
             "is_deleted": False,
         }
 
+    def test_default_port_is_the_emulator_backend_port(self):
+        self.assertEqual(app_module.DEFAULT_PORT, 5058)
+
     def create(self, payload):
         return self.client.post("/api/notes", json=payload)
 

@@ -11,6 +11,7 @@ from database import check_mongodb_connection, get_notes_collection
 app = Flask(__name__)
 CORS(app)
 
+DEFAULT_PORT = 5058
 NOTE_FIELDS = ("id", "title", "content", "version", "updated_at", "is_deleted")
 
 
@@ -389,5 +390,5 @@ def delete_note(note_id):
 
 if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "5000"))
+    port = int(os.getenv("PORT", str(DEFAULT_PORT)))
     app.run(host=host, port=port, debug=False)
